@@ -17,7 +17,7 @@
 #
 
 # Golang package.
-PKG := k8s.io/dns
+PKG := sigs.k8s.io/node-local-dns
 
 # List of binaries to build that are containerized and pushed.
 # You must have a matching Dockerfile.BINARY for each BINARY.

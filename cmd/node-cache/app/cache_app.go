@@ -23,10 +23,10 @@ import (
 	"github.com/coredns/coredns/coremain"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 
-	"k8s.io/dns/pkg/dns/config"
-	"k8s.io/dns/pkg/netif"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
 	utilnet "k8s.io/utils/net"
+	"sigs.k8s.io/node-local-dns/pkg/dns/config"
+	"sigs.k8s.io/node-local-dns/pkg/netif"
 )
 
 var (

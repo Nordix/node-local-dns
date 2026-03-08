@@ -25,7 +25,7 @@ import (
 	types "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/dns/pkg/dns/util"
+	"sigs.k8s.io/node-local-dns/pkg/dns/util"
 )
 
 // Config populated either from the configuration source (command

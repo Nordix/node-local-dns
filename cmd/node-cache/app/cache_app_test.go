@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/dns/pkg/dns/config"
+	"sigs.k8s.io/node-local-dns/pkg/dns/config"
 )
 
 const (

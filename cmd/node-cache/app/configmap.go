@@ -23,7 +23,7 @@ import (
 	"time"
 
 	clog "github.com/coredns/coredns/plugin/pkg/log"
-	"k8s.io/dns/pkg/dns/config"
+	"sigs.k8s.io/node-local-dns/pkg/dns/config"
 )
 
 const (

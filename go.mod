@@ -1,4 +1,4 @@
-module k8s.io/dns
+module sigs.k8s.io/node-local-dns
 
 go 1.25.0
 
