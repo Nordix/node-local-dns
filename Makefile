@@ -19,12 +19,6 @@
 # Golang package.
 PKG := k8s.io/dns
 
-# List of binaries to build.
-BINARIES := \
-    e2e \
-    ginkgo \
-    sidecar-e2e
-
 # List of binaries to build that are containerized and pushed.
 # You must have a matching Dockerfile.BINARY for each BINARY.
 CONTAINER_BINARIES := \
