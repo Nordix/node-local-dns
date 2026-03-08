@@ -44,10 +44,6 @@ Session.vim
 **/.hg
 **/.hg*
 
-# Vagrant
-.vagrant
-network_closure.sh
-
 # Local cluster env variables
 /cluster/env.sh
 
