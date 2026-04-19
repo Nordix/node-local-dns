@@ -23,7 +23,7 @@ import (
 	"time"
 
 	clog "github.com/coredns/coredns/plugin/pkg/log"
-	"k8s.io/dns/pkg/dns/config"
+	"sigs.k8s.io/node-local-dns/pkg/dns/config"
 )
 
 const (
@@ -183,10 +183,10 @@ func (c *CacheApp) initDNSConfigSync() {
 	}
 
 	if c.params.KubednsCMPath != "" {
-		c.kubednsConfig.ConfigDir = c.params.KubednsCMPath
+		c.config.ConfigDir = c.params.KubednsCMPath
 		syncList = append(syncList, &syncInfo{configName: "kube-dns",
-			filePath:   c.kubednsConfig.ConfigDir,
-			period:     c.kubednsConfig.ConfigPeriod,
+			filePath:   c.config.ConfigDir,
+			period:     c.config.ConfigPeriod,
 			updateFunc: c.updateCorefile,
 			chanAddr:   &kubeDNSChan,
 		})

@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/dns/pkg/dns/config"
+	"sigs.k8s.io/node-local-dns/pkg/dns/config"
 )
 
 const (
@@ -123,8 +123,19 @@ func stubDomainsEqual(str1, str2 string, t *testing.T) bool {
 	return true
 }
 
+// We avoid using t.TempDir() because the unit tests don't explicitly kill CoreDNS, and
+// it's possible CoreDNS will write a new file in the temporary dir while testing.T is
+// trying to delete the directory at the end of the test, causing the test to fail.
+func mktempdir(t *testing.T) string {
+	tempdir, err := os.MkdirTemp("", "cache_app_test")
+	if err != nil {
+		t.Fatalf("could not create temp dir: %v", err)
+	}
+	return tempdir
+}
+
 func TestUpdateCoreFile(t *testing.T) {
-	baseDir := t.TempDir()
+	baseDir := mktempdir(t)
 	envName := strings.ToUpper(strings.Replace(UpstreamClusterDNS, "-", "_", -1)) + "_SERVICE_HOST"
 	os.Setenv(envName, "9.10.11.12")
 	c, err := NewCacheApp(&ConfigParams{LocalIPStr: "169.254.20.10,10.0.0.10",
@@ -196,7 +207,7 @@ func TestUpdateCoreFile(t *testing.T) {
 }
 
 func TestUpdateIPv6CoreFile(t *testing.T) {
-	baseDir := t.TempDir()
+	baseDir := mktempdir(t)
 	envName := strings.ToUpper(strings.Replace(UpstreamClusterDNS, "-", "_", -1)) + "_SERVICE_HOST"
 	os.Setenv(envName, "2001:db8::1")
 	c, err := NewCacheApp(&ConfigParams{LocalIPStr: "fe80:169:254::1,fd00:1:2:3::5",

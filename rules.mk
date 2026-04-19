@@ -89,7 +89,7 @@ all-push: $(addprefix push-, $(ALL_ARCH))
 	done
 
 .PHONY: build
-build: $(GO_BINARIES) images-build
+build: $(GO_BINARIES)
 
 
 # Rule for all bin/$(ARCH)/bin/$(BINARY)
@@ -154,12 +154,12 @@ endef
 $(foreach BINARY,$(CONTAINER_BINARIES),$(eval $(CONTAINER_RULE)))
 
 .PHONY: containers
-containers: $(CONTAINER_BUILDSTAMPS) images-containers
+containers: $(CONTAINER_BUILDSTAMPS)
 
 
 # Rules for pushing
 .PHONY: push
-push: $(PUSH_BUILDSTAMPS) images-push
+push: $(PUSH_BUILDSTAMPS)
 
 .%-push: .%-container
 	@echo "pushing  :" $$(head -n 1 $<)
@@ -180,7 +180,7 @@ $(foreach BINARY,$(CONTAINER_BINARIES),$(eval $(PUSH_RULE)))
 # be set to off in go1.12 and later - https://github.com/golang/go/issues/29378
 # So this is a workaround where we set GOCACHE env variable, but do not use it as a volume.
 .PHONY: test
-test: build-dirs images-test
+test: build-dirs
 	@docker run                                                            \
 	    --rm                                                               \
 	    --sig-proxy=true                                                   \
@@ -196,27 +196,6 @@ test: build-dirs images-test
 	        ./build/test.sh $(SRC_DIRS)                                    \
 	    "
 
-# Hook in images build
-.PHONY: images-build
-images-build:
-	@$(MAKE) -C images build
-
-.PHONY: images-containers
-images-containers:
-	@$(MAKE) -C images containers
-
-.PHONY: images-push
-images-push:
-	@$(MAKE) -C images push
-
-.PHONY: images-test
-images-test:
-	@$(MAKE) -C images test
-
-.PHONY: images-clean
-images-clean:
-	@$(MAKE) -C images clean
-
 # Miscellaneous rules
 .PHONY: version
 version:
@@ -228,7 +207,7 @@ build-dirs:
 	@mkdir -p .go/src/$(PKG) .go/pkg .go/bin .go/std/$(ARCH)
 
 .PHONY: clean
-clean: container-clean bin-clean images-clean
+clean: container-clean bin-clean
 
 .PHONY: container-clean
 container-clean:
@@ -245,7 +224,7 @@ help:
 	@echo "  all, build    build all binaries"
 	@echo "  containers    build the containers"
 	@echo "  push          push containers to the registry"
-	@echo "  images-clean  clear image build artifacts from workdir"
+	@echo "  clean         clear build artifacts from workdir"
 	@echo "  help          this help message"
 	@echo "  version       show package version"
 	@echo

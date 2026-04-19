@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/dns/cmd/node-cache/app"
+	"sigs.k8s.io/node-local-dns/cmd/node-cache/app"
 
 	corednsmain "github.com/coredns/coredns/coremain"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
@@ -49,7 +49,7 @@ import (
 	_ "github.com/coredns/coredns/plugin/timeouts"
 	_ "github.com/coredns/coredns/plugin/trace"
 	_ "github.com/coredns/coredns/plugin/whoami"
-	"k8s.io/dns/pkg/version"
+	"sigs.k8s.io/node-local-dns/pkg/version"
 )
 
 var cache *app.CacheApp
