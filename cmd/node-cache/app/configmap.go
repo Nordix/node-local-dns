@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"syscall"
 	"text/template"
@@ -50,7 +51,16 @@ const (
 	LocalListenIPsVar       = "__PILLAR__LOCAL__DNS__"
 	LocalDNSServerVar       = "__PILLAR__DNS__SERVER__"
 	DefaultKubednsCMPath    = "/etc/kube-dns"
+
+	PrometheusEndpointVar = "__PILLAR__PROMETHEUS__ENDPOINT__"
 )
+
+// prometheusBlockRegexp matches a prometheus plugin directive that carries an
+// unsupported config block (e.g. tls/client_auth). The stock CoreDNS prometheus
+// plugin only accepts a bare address and fails with "this plugin can only be
+// used once per Server Block" when given a block, so the block is stripped. The
+// captured group ($1) keeps the "prometheus <endpoint>" prefix.
+var prometheusBlockRegexp = regexp.MustCompile(`(?s)(prometheus[ \t]+` + regexp.QuoteMeta(PrometheusEndpointVar) + `)[ \t]*\{[^{}]*\}`)
 
 // stubDomainInfo contains all the parameters needed to compute
 // a stubDomain block in the Corefile.
@@ -121,6 +131,19 @@ func (c *CacheApp) updateCorefile(dnsConfig *config.Config) {
 	// variables are left unsubstituted.
 	if bytes.Contains(baseConfig, []byte(LocalDNSServerVar)) {
 		baseConfig = bytes.Replace(baseConfig, []byte(LocalDNSServerVar), []byte(""), -1)
+	}
+
+	// If the template Corefile has the Prometheus plugin, replace the bind address with the one specified in the parameters. Otherwise, do nothing since there is no Prometheus plugin to update.
+	if bytes.Contains(baseConfig, []byte(PrometheusEndpointVar)) {
+		// The stock CoreDNS prometheus plugin only accepts a bare address. If the
+		// template wraps it in a config block (e.g. to request TLS), strip the
+		// block so CoreDNS can start. Metrics TLS is served by the separate
+		// metrics endpoint (--metrics-listen-address), not this plugin.
+		if prometheusBlockRegexp.Match(baseConfig) {
+			clog.Warningf("Stripping unsupported config block from prometheus plugin directive; metrics TLS is served via the --metrics-listen-address endpoint")
+			baseConfig = prometheusBlockRegexp.ReplaceAll(baseConfig, []byte("$1"))
+		}
+		baseConfig = bytes.Replace(baseConfig, []byte(PrometheusEndpointVar), []byte(c.params.PrometheusListenAddress), -1)
 	}
 
 	newConfig := bytes.Buffer{}
