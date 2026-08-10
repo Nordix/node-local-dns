@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"slices"
@@ -112,6 +113,9 @@ type llmobsContext struct {
 	outputDocuments []RetrievedDocument
 	outputMessages  []LLMMessage
 	outputText      string
+
+	// tool specific
+	intent string
 
 	// experiment specific
 	experimentInput          any
@@ -248,10 +252,8 @@ func (l *LLMObs) Run() {
 	l.running = true
 	l.mu.Unlock()
 
-	l.wg.Add(1)
-	go func() {
+	l.wg.Go(func() {
 		// this goroutine should be the only one writing to the internal buffers
-		defer l.wg.Done()
 
 		ticker := time.NewTicker(l.flushInterval)
 		defer ticker.Stop()
@@ -266,20 +268,16 @@ func (l *LLMObs) Run() {
 
 			case <-ticker.C:
 				params := l.clearBuffersNonLocked()
-				l.wg.Add(1)
-				go func() {
-					defer l.wg.Done()
+				l.wg.Go(func() {
 					l.batchSend(params)
-				}()
+				})
 
 			case <-l.flushNowCh:
 				log.Debug("llmobs: on-demand flush signal")
 				params := l.clearBuffersNonLocked()
-				l.wg.Add(1)
-				go func() {
-					defer l.wg.Done()
+				l.wg.Go(func() {
 					l.batchSend(params)
-				}()
+				})
 
 			case <-l.stopCh:
 				log.Debug("llmobs: stop signal")
@@ -289,7 +287,7 @@ func (l *LLMObs) Run() {
 				return
 			}
 		}
-	}()
+	})
 }
 
 // clearBuffersNonLocked clears the internal buffers and returns the corresponding batchSendParams to send to the backend.
@@ -513,6 +511,14 @@ func (l *LLMObs) llmobsSpanEvent(span *Span) *transport.LLMObsSpanEvent {
 		meta["tool_definitions"] = toolDefinitions
 	}
 
+	if intent := span.llmCtx.intent; intent != "" {
+		if spanKind != SpanKindTool {
+			log.Warn("llmobs: dropping intent on non-tool span kind, annotating intent is only supported for tool span kinds")
+		} else {
+			meta["intent"] = intent
+		}
+	}
+
 	spanStatus := "ok"
 	var errMsg *transport.ErrorMessage
 	if span.error != nil {
@@ -534,6 +540,8 @@ func (l *LLMObs) llmobsSpanEvent(span *Span) *transport.LLMObsSpanEvent {
 	parentID := defaultParentID
 	if span.parent != nil {
 		parentID = span.parent.apm.SpanID()
+	} else if span.propagated != nil {
+		parentID = span.propagated.SpanID
 	}
 	if span.llmTraceID == "" {
 		log.Warn("llmobs: span has no trace ID")
@@ -570,12 +578,19 @@ func (l *LLMObs) llmobsSpanEvent(span *Span) *transport.LLMObsSpanEvent {
 		tags["integration"] = span.integration
 	}
 
-	for k, v := range span.llmCtx.tags {
-		tags[k] = v
-	}
+	maps.Copy(tags, span.llmCtx.tags)
 	tagsSlice := make([]string, 0, len(tags))
 	for k, v := range tags {
 		tagsSlice = append(tagsSlice, fmt.Sprintf("%s:%s", k, v))
+	}
+
+	ddAttrs := transport.DDAttributes{
+		SpanID:     spanID,
+		TraceID:    span.llmTraceID,
+		APMTraceID: span.apm.TraceID(),
+	}
+	if span.scope != "" {
+		ddAttrs.Scope = span.scope
 	}
 
 	ev := &transport.LLMObsSpanEvent{
@@ -593,7 +608,7 @@ func (l *LLMObs) llmobsSpanEvent(span *Span) *transport.LLMObsSpanEvent {
 		Metrics:          span.llmCtx.metrics,
 		CollectionErrors: nil,
 		SpanLinks:        span.spanLinks,
-		Scope:            span.scope,
+		DDAttributes:     ddAttrs,
 	}
 	if b, err := json.Marshal(ev); err == nil {
 		rawSize := len(b)
@@ -688,6 +703,7 @@ func (l *LLMObs) StartSpan(ctx context.Context, kind SpanKind, name string, cfg 
 	span.mlApp = cfg.MLApp
 	span.spanKind = kind
 	span.sessionID = cfg.SessionID
+	span.integration = cfg.Integration
 
 	span.llmCtx = llmobsContext{
 		modelName:     cfg.ModelName,

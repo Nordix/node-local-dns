@@ -41,6 +41,7 @@ type ConfigParams struct {
 	LocalIPs             []net.IP      // parsed ip addresses for the local cache agent to listen for dns requests
 	LocalPort            string        // port to listen for dns requests
 	MetricsListenAddress string        // address to serve metrics on
+	PrometheusListenAddress string     // address to serve Prometheus metrics on
 	SetupInterface       bool          // Indicates whether to setup network interface
 	InterfaceName        string        // Name of the interface to be created
 	Interval             time.Duration // specifies how often to run iptables rules check
@@ -51,8 +52,9 @@ type ConfigParams struct {
 	UpstreamSvcName      string        // Name of the service whose clusterIP is the upstream for node-cache for cluster domain
 	HealthPort           string        // port for the healthcheck
 	SetupIptables        bool
-	SkipTeardown         bool // Indicates whether the iptables rules and interface should be torn down
-	ReloadWithSignal     bool // Indicates config reload should be triggered with SIGUSR1, rather than expecting CoreDNS's reload plugin
+	SkipTeardown         bool      // Indicates whether the iptables rules and interface should be torn down
+	ReloadWithSignal     bool      // Indicates config reload should be triggered with SIGUSR1, rather than expecting CoreDNS's reload plugin
+	TlsConfig            tlsConfig // Config for the metrics endpoint
 }
 
 type iptablesRule struct {
@@ -85,7 +87,10 @@ func (c *CacheApp) Init() {
 	if c.params.SetupIptables {
 		c.initIptables()
 	}
-	initMetrics(c.params.MetricsListenAddress)
+	met := New(c.params.MetricsListenAddress, &c.params.TlsConfig)
+	if err := met.OnStartup(); err != nil {
+		clog.Infof("Failed to serve metrics with error \"%s\"", err)
+	}
 	// Write the config file from template.
 	// this is required in case there is no or erroneous kube-dns configpath specified.
 	c.updateCorefile(&config.Config{})

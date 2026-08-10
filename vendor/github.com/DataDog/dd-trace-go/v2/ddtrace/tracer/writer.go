@@ -18,6 +18,7 @@ import (
 	"time"
 
 	globalinternal "github.com/DataDog/dd-trace-go/v2/internal"
+	"github.com/DataDog/dd-trace-go/v2/internal/locking"
 	"github.com/DataDog/dd-trace-go/v2/internal/log"
 )
 
@@ -37,10 +38,10 @@ type agentTraceWriter struct {
 	config *config
 
 	// mu synchronizes access to payload operations
-	mu sync.Mutex
+	mu locking.Mutex
 
 	// payload encodes and buffers traces in msgpack format
-	payload payload
+	payload payload // +checklocks:mu
 
 	// climit limits the number of concurrent outgoing connections
 	climit chan struct{}
@@ -55,7 +56,7 @@ type agentTraceWriter struct {
 	// statsd is used to send metrics
 	statsd globalinternal.StatsdClient
 
-	tracesQueued uint32
+	tracesQueued uint32 // +checkatomic
 }
 
 func newAgentTraceWriter(c *config, s *prioritySampler, statsdClient globalinternal.StatsdClient) *agentTraceWriter {
@@ -149,7 +150,7 @@ func (h *agentTraceWriter) flush() {
 				log.Error("failure sending traces (attempt %d of %d): %v", attempt+1, h.config.sendRetries+1, err.Error())
 			}
 			p.reset()
-			time.Sleep(h.config.retryInterval)
+			time.Sleep(h.config.internalConfig.RetryInterval())
 		}
 		h.statsd.Count("datadog.tracer.traces_dropped", int64(stats.itemCount), []string{"reason:send_failed"}, 1)
 		log.Error("lost %d traces: %v", stats.itemCount, err.Error())
@@ -223,6 +224,7 @@ func encodeFloat(p []byte, f float64) []byte {
 	return p
 }
 
+// +checklocksignore — Post-finish: serializes finished span for log transport.
 func (h *logTraceWriter) encodeSpan(s *Span) {
 	var scratch [maxFloatLength]byte
 	h.buf.WriteString(`{"trace_id":"`)

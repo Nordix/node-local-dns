@@ -2,6 +2,7 @@ package cache
 
 import (
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coredns/coredns/plugin/cache/freq"
@@ -25,6 +26,14 @@ type item struct {
 	stored  time.Time
 
 	*freq.Freq
+
+	// refreshing is set via CAS when a prefetch goroutine is dispatched for
+	// this item and cleared when it returns, bounding in-flight prefetches
+	// per item to one. A successful prefetch replaces this item in the cache
+	// with a new one (zero-valued refreshing); the deferred clear matters
+	// only when the prefetch fails and this item remains cached, so the next
+	// hit can retry.
+	refreshing atomic.Bool
 }
 
 func newItem(m *dns.Msg, now time.Time, d time.Duration) *item {
@@ -82,7 +91,7 @@ func (i *item) toMsg(m *dns.Msg, now time.Time, do bool, ad bool) *dns.Msg {
 	m1.RecursionAvailable = i.RecursionAvailable
 	m1.Rcode = i.Rcode
 
-	ttl := uint32(i.ttl(now))
+	ttl := uint32(i.ttl(now)) // #nosec G115 -- ttl is bounded by DNS TTL limits
 	m1.Answer = filterRRSlice(i.Answer, ttl, true)
 	m1.Ns = filterRRSlice(i.Ns, ttl, true)
 	m1.Extra = filterRRSlice(i.Extra, ttl, true)
