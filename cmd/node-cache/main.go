@@ -84,6 +84,7 @@ func parseAndValidateFlags() (*app.ConfigParams, error) {
 	flag.StringVar(&params.InterfaceName, "interfacename", "nodelocaldns", "name of the interface to be created")
 	flag.DurationVar(&params.Interval, "syncinterval", 60, "interval(in seconds) to check for iptables rules")
 	flag.StringVar(&params.MetricsListenAddress, "metrics-listen-address", "0.0.0.0:9353", "address to serve metrics on")
+	flag.StringVar(&params.PrometheusListenAddress, "prometheus-listen-address", ":9253", "address to serve Prometheus metrics on")
 	flag.BoolVar(&params.SetupIptables, "setupiptables", true, "indicates whether iptables rules should be setup")
 	flag.StringVar(&params.BaseCoreFile, "basecorefile", "/etc/coredns/Corefile.base", "Path to the template Corefile for node-cache")
 	flag.StringVar(&params.CoreFile, "corefile", "/etc/Corefile", "Path to the Corefile to be used by node-cache")
@@ -92,6 +93,13 @@ func parseAndValidateFlags() (*app.ConfigParams, error) {
 	flag.StringVar(&params.HealthPort, "health-port", "8080", "port used by health plugin")
 	flag.BoolVar(&params.SkipTeardown, "skipteardown", false, "indicates whether iptables rules should be torn down on exit")
 	flag.BoolVar(&params.ReloadWithSignal, "reloadwithsignal", false, "use SIGUSR1 on self to reload CoreDNS")
+
+	flag.StringVar(&params.TlsConfig.CertFile, "tls-cert-file", "/etc/ssl/tls.crt", "Path to TLS certificate for HTTPS, defaults to '/etc/ssl/tls.crt'")
+	flag.StringVar(&params.TlsConfig.KeyFile, "tls-private-key-file", "/etc/ssl/tls.key", "Path to TLS private key for HTTPS, defaults to '/etc/ssl/tls.key'")
+	flag.StringVar(&params.TlsConfig.ClientAuthType, "tls-client-auth-type", "NoClientCert", "TLS client authorization type, defaults to 'NoClientCert'")
+	flag.StringVar(&params.TlsConfig.ClientCAFile, "tls-client-ca-file", "", "Path to TLS client CA file, defaults to ''")
+	flag.StringVar(&params.TlsConfig.MinVersion, "tls-min-version", "TLS13", "TLS version, defaults to TLS13")
+	flag.BoolVar(&params.TlsConfig.Enabled, "tls-enabled", false, "Enable TLS, defaults to false")
 	flag.Parse()
 
 	for _, ipstr := range strings.Split(params.LocalIPStr, ",") {

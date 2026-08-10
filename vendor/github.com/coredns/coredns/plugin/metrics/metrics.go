@@ -3,18 +3,23 @@ package metrics
 
 import (
 	"context"
+	"crypto/tls"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/plugin"
+	"github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/plugin/pkg/reuseport"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/exporter-toolkit/web"
 )
 
 // Metrics holds the prometheus configuration. The metrics' path is fixed to be /metrics .
@@ -34,6 +39,11 @@ type Metrics struct {
 	zoneMu    sync.RWMutex
 
 	plugins map[string]struct{} // all available plugins, used to determine which plugin made the client write
+
+	// tlsConfigPath points to an exporter-toolkit web config YAML file (tls <file>).
+	tlsConfigPath string
+	// tlsConfig is built from inline Corefile args (tls <cert> <key> [ca] / client_auth).
+	tlsConfig *tls.Config
 }
 
 // New returns a new instance of Metrics with the given address.
@@ -83,6 +93,32 @@ func (m *Metrics) ZoneNames() []string {
 	return s
 }
 
+// startupListener wraps a net.Listener to detect when Accept() is first called
+type startupListener struct {
+	net.Listener
+	readyOnce sync.Once
+	ready     chan struct{}
+}
+
+func newStartupListener(l net.Listener) *startupListener {
+	return &startupListener{
+		Listener: l,
+		ready:    make(chan struct{}),
+	}
+}
+
+func (sl *startupListener) Accept() (net.Conn, error) {
+	// Signal ready on first Accept() call (server is running)
+	sl.readyOnce.Do(func() {
+		close(sl.ready)
+	})
+	return sl.Listener.Accept()
+}
+
+func (sl *startupListener) Ready() <-chan struct{} {
+	return sl.ready
+}
+
 // OnStartup sets up the metrics on startup.
 func (m *Metrics) OnStartup() error {
 	ln, err := reuseport.Listen("tcp", m.Addr)
@@ -91,7 +127,9 @@ func (m *Metrics) OnStartup() error {
 		return err
 	}
 
-	m.ln = ln
+	startupListener := newStartupListener(ln)
+
+	m.ln = startupListener
 	m.lnSetup = true
 
 	m.mux = http.NewServeMux()
@@ -99,6 +137,7 @@ func (m *Metrics) OnStartup() error {
 
 	// creating some helper variables to avoid data races on m.srv and m.ln
 	server := &http.Server{
+		Addr:         m.Addr,
 		Handler:      m.mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
@@ -106,9 +145,74 @@ func (m *Metrics) OnStartup() error {
 	}
 	m.srv = server
 
+	if m.tlsConfigPath == "" && m.tlsConfig == nil {
+		go func() {
+			if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
+				log.Errorf("Failed to start HTTP metrics server: %s", err)
+			}
+		}()
+		ListenAddr = ln.Addr().String() // For tests.
+		return nil
+	}
+
+	// Serve HTTPS from an inline TLS config (tls <cert> <key> [ca] / client_auth).
+	if m.tlsConfig != nil {
+		tlsLn := tls.NewListener(startupListener, m.tlsConfig)
+		startUpErr := make(chan error, 1)
+		go func() {
+			if err := server.Serve(tlsLn); err != nil && err != http.ErrServerClosed {
+				log.Errorf("Failed to start HTTPS metrics server: %v", err)
+				startUpErr <- err
+			}
+		}()
+
+		select {
+		case err := <-startUpErr:
+			return err
+		case <-startupListener.Ready():
+			log.Infof("Server is ready and accepting connections")
+		}
+
+		ListenAddr = ln.Addr().String() // For tests.
+		return nil
+	}
+
+	// Check TLS config file existence
+	if _, err := os.Stat(m.tlsConfigPath); os.IsNotExist(err) {
+		log.Errorf("TLS config file does not exist: %s", m.tlsConfigPath)
+		return err
+	}
+
+	// Create web config for ListenAndServe
+	webConfig := &web.FlagConfig{
+		WebListenAddresses: &[]string{m.Addr},
+		WebSystemdSocket:   new(bool), // false by default
+		WebConfigFile:      &m.tlsConfigPath,
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	// Create channels for synchronization
+	startUpErr := make(chan error, 1)
+
 	go func() {
-		server.Serve(ln)
+		// Try to start the server and report result if there an error.
+		// web.Serve() never returns nil, it always returns a non-nil error and
+		// it doesn't retun anything if server starts successfully.
+		// startupListener handles capturing succesful startup.
+		err := web.Serve(m.ln, server, webConfig, logger)
+		if err != nil && err != http.ErrServerClosed {
+			log.Errorf("Failed to start HTTPS metrics server: %v", err)
+			startUpErr <- err
+		}
 	}()
+
+	// Wait for startup errors
+	select {
+	case err := <-startUpErr:
+		return err
+	case <-startupListener.Ready():
+		log.Infof("Server is ready and accepting connections")
+	}
 
 	ListenAddr = ln.Addr().String() // For tests.
 	return nil
@@ -142,7 +246,7 @@ func (m *Metrics) stopServer() error {
 func (m *Metrics) OnFinalShutdown() error { return m.stopServer() }
 
 func keys(m map[string]struct{}) []string {
-	sx := []string{}
+	sx := make([]string, 0, len(m))
 	for k := range m {
 		sx = append(sx, k)
 	}

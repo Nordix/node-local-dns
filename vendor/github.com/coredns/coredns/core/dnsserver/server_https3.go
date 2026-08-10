@@ -13,12 +13,19 @@ import (
 	"github.com/coredns/coredns/plugin/metrics/vars"
 	"github.com/coredns/coredns/plugin/pkg/dnsutil"
 	"github.com/coredns/coredns/plugin/pkg/doh"
+	cproxyproto "github.com/coredns/coredns/plugin/pkg/proxyproto"
 	"github.com/coredns/coredns/plugin/pkg/response"
 	"github.com/coredns/coredns/plugin/pkg/reuseport"
 	"github.com/coredns/coredns/plugin/pkg/transport"
 
+	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+)
+
+const (
+	// DefaultHTTPS3MaxStreams is the default maximum number of concurrent QUIC streams per connection.
+	DefaultHTTPS3MaxStreams = 256
 )
 
 // ServerHTTPS3 represents a DNS-over-HTTP/3 server.
@@ -29,6 +36,7 @@ type ServerHTTPS3 struct {
 	tlsConfig    *tls.Config
 	quicConfig   *quic.Config
 	validRequest func(*http.Request) bool
+	maxStreams   int
 }
 
 // NewServerHTTPS3 builds the HTTP/3 (DoH3) server.
@@ -63,10 +71,19 @@ func NewServerHTTPS3(addr string, group []*Config) (*ServerHTTPS3, error) {
 		validator = func(r *http.Request) bool { return r.URL.Path == doh.Path }
 	}
 
-	// QUIC transport config
+	maxStreams := DefaultHTTPS3MaxStreams
+	if len(group) > 0 && group[0] != nil && group[0].MaxHTTPS3Streams != nil {
+		maxStreams = *group[0].MaxHTTPS3Streams
+	}
+
+	// QUIC transport config with stream limits (0 means use QUIC default)
 	qconf := &quic.Config{
 		MaxIdleTimeout: s.IdleTimeout,
 		Allow0RTT:      true,
+	}
+	if maxStreams > 0 {
+		qconf.MaxIncomingStreams = int64(maxStreams)
+		qconf.MaxIncomingUniStreams = int64(maxStreams)
 	}
 
 	h3srv := &http3.Server{
@@ -74,7 +91,7 @@ func NewServerHTTPS3(addr string, group []*Config) (*ServerHTTPS3, error) {
 		TLSConfig:       tlsConfig,
 		EnableDatagrams: true,
 		QUICConfig:      qconf,
-		//Logger: stdlog.New(&loggerAdapter{}, "", 0), TODO: Fix it
+		// Logger: stdlog.New(&loggerAdapter{}, "", 0), TODO: Fix it
 	}
 
 	sh := &ServerHTTPS3{
@@ -83,6 +100,7 @@ func NewServerHTTPS3(addr string, group []*Config) (*ServerHTTPS3, error) {
 		httpsServer:  h3srv,
 		quicConfig:   qconf,
 		validRequest: validator,
+		maxStreams:   maxStreams,
 	}
 
 	h3srv.Handler = sh
@@ -94,7 +112,14 @@ var _ caddy.GracefulServer = &ServerHTTPS3{}
 
 // ListenPacket opens the UDP socket for QUIC.
 func (s *ServerHTTPS3) ListenPacket() (net.PacketConn, error) {
-	return reuseport.ListenPacket("udp", s.Addr[len(transport.HTTPS3+"://"):])
+	p, err := reuseport.ListenPacket("udp", s.Addr[len(transport.HTTPS3+"://"):])
+	if err != nil {
+		return nil, err
+	}
+	if s.connPolicy != nil {
+		p = &cproxyproto.PacketConn{PacketConn: p, ConnPolicy: s.connPolicy}
+	}
+	return p, nil
 }
 
 // ServePacket starts serving QUIC+HTTP/3 on an existing UDP socket.
@@ -108,7 +133,7 @@ func (s *ServerHTTPS3) ServePacket(pc net.PacketConn) error {
 
 // Listen function not used in HTTP/3, but defined for compatibility
 func (s *ServerHTTPS3) Listen() (net.Listener, error) { return nil, nil }
-func (s *ServerHTTPS3) Serve(l net.Listener) error    { return nil }
+func (s *ServerHTTPS3) Serve(_l net.Listener) error   { return nil }
 
 // OnStartupComplete lists the sites served by this server
 // and any relevant information, assuming Quiet is false.
@@ -148,7 +173,7 @@ func (s *ServerHTTPS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg, err := doh.RequestToMsg(r)
+	msg, raw, err := doh.RequestToMsgWire(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		s.countResponse(http.StatusBadRequest)
@@ -162,6 +187,16 @@ func (s *ServerHTTPS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		laddr:   s.listenAddr,
 		raddr:   &net.UDPAddr{IP: net.ParseIP(h), Port: port},
 		request: r,
+	}
+
+	if tsig := msg.IsTsig(); tsig != nil {
+		if s.tsigSecret == nil {
+			dw.tsigStatus = dns.ErrSecret
+		} else if secret, ok := s.tsigSecret[tsig.Hdr.Name]; !ok {
+			dw.tsigStatus = dns.ErrSecret
+		} else {
+			dw.tsigStatus = dns.TsigVerify(raw, secret, "", false)
+		}
 	}
 
 	ctx := context.WithValue(r.Context(), Key{}, s.Server)

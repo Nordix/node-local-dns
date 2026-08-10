@@ -12,6 +12,7 @@ import (
 
 	"github.com/DataDog/datadog-agent/pkg/obfuscate"
 	"github.com/DataDog/datadog-agent/pkg/trace/stats"
+
 	"github.com/DataDog/dd-trace-go/v2/ddtrace/ext"
 	"github.com/DataDog/dd-trace-go/v2/internal"
 	"github.com/DataDog/dd-trace-go/v2/internal/civisibility/constants"
@@ -40,7 +41,7 @@ type concentrator struct {
 	In chan *tracerStatSpan
 
 	// stopped reports whether the concentrator is stopped (when non-zero)
-	stopped uint32
+	stopped uint32 // +checkatomic
 
 	spanConcentrator *stats.SpanConcentrator
 
@@ -66,8 +67,8 @@ func newConcentrator(c *config, bucketSize int64, statsdClient internal.StatsdCl
 		BucketInterval:         defaultStatsBucketSize,
 	}
 	env := c.agent.defaultEnv
-	if c.env != "" {
-		env = c.env
+	if c.internalConfig.Env() != "" {
+		env = c.internalConfig.Env()
 	}
 	if env == "" {
 		// We do this to avoid a panic in the stats calculation logic when env is empty
@@ -77,14 +78,14 @@ func newConcentrator(c *config, bucketSize int64, statsdClient internal.StatsdCl
 		log.Debug("No DD Env found, normally the agent should have one")
 	}
 	gitCommitSha := ""
-	if c.ciVisibilityEnabled {
+	if c.internalConfig.CIVisibilityEnabled() {
 		// We only have this data if we're in CI Visibility
 		gitCommitSha = utils.GetCITags()[constants.GitCommitSHA]
 	}
 	aggKey := stats.PayloadAggregationKey{
-		Hostname:     c.hostname,
+		Hostname:     c.internalConfig.Hostname(),
 		Env:          env,
-		Version:      c.version,
+		Version:      c.internalConfig.Version(),
 		ContainerID:  "", // This intentionally left empty as the Agent will attach the container ID only in certain situations.
 		GitCommitSha: gitCommitSha,
 		ImageTag:     "",
@@ -114,18 +115,14 @@ func (c *concentrator) Start() {
 		return
 	}
 	c.stop = make(chan struct{})
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
+	c.wg.Go(func() {
 		tick := time.NewTicker(time.Duration(c.bucketSize) * time.Nanosecond)
 		defer tick.Stop()
 		c.runFlusher(tick.C)
-	}()
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
+	})
+	c.wg.Go(func() {
 		c.runIngester()
-	}()
+	})
 }
 
 // runFlusher runs the flushing loop which sends stats to the underlying transport.
@@ -162,6 +159,7 @@ func (c *concentrator) runIngester() {
 	}
 }
 
+// +checklocksignore — Post-finish: reads finished span fields during stats computation.
 func (c *concentrator) newTracerStatSpan(s *Span, obfuscator *obfuscate.Obfuscator) (*tracerStatSpan, bool) {
 	resource := s.resource
 	if c.shouldObfuscate() {

@@ -1,23 +1,41 @@
 package metrics
 
 import (
+	"crypto/tls"
 	"net"
 	"runtime"
+	"sync"
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/coremain"
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/metrics/vars"
-	clog "github.com/coredns/coredns/plugin/pkg/log"
+	pkgtls "github.com/coredns/coredns/plugin/pkg/tls"
 	"github.com/coredns/coredns/plugin/pkg/uniq"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 var (
-	log      = clog.NewWithPlugin("prometheus")
 	u        = uniq.New()
 	registry = newReg()
+
+	// There is one Go runtime per process, so this is a latch: the first server
+	// block to enable runtime_metrics swaps the collector for everyone, and the
+	// swap persists across reloads until process restart.
+	runtimeMetricsOnce sync.Once
 )
+
+// clientAuthTypes maps the client_auth Corefile values to crypto/tls types.
+var clientAuthTypes = map[string]tls.ClientAuthType{
+	"NoClientCert":               tls.NoClientCert,
+	"RequestClientCert":          tls.RequestClientCert,
+	"RequireAnyClientCert":       tls.RequireAnyClientCert,
+	"VerifyClientCertIfGiven":    tls.VerifyClientCertIfGiven,
+	"RequireAndVerifyClientCert": tls.RequireAndVerifyClientCert,
+}
 
 func init() { plugin.Register("prometheus", setup) }
 
@@ -96,6 +114,69 @@ func parse(c *caddy.Controller) (*Metrics, error) {
 			}
 		default:
 			return met, c.ArgErr()
+		}
+
+		var (
+			clientAuth    tls.ClientAuthType
+			clientAuthSet bool
+		)
+		for c.NextBlock() {
+			switch c.Val() {
+			case "runtime_metrics":
+				if len(c.RemainingArgs()) != 0 {
+					return nil, c.ArgErr()
+				}
+				runtimeMetricsOnce.Do(func() {
+					prometheus.Unregister(collectors.NewGoCollector())
+					prometheus.MustRegister(collectors.NewGoCollector(
+						collectors.WithGoCollectorRuntimeMetrics(collectors.MetricsAll),
+					))
+				})
+			case "tls":
+				if met.tlsConfigPath != "" || met.tlsConfig != nil {
+					return nil, c.Err("tls already specified")
+				}
+
+				args := c.RemainingArgs()
+				switch len(args) {
+				case 1:
+					// Single argument: exporter-toolkit web config YAML file.
+					met.tlsConfigPath = args[0]
+				case 2, 3:
+					// Inline cert, key and optional CA.
+					tlsConfig, err := pkgtls.NewTLSConfigFromArgs(args...)
+					if err != nil {
+						return nil, err
+					}
+					met.tlsConfig = tlsConfig
+				default:
+					return nil, c.ArgErr()
+				}
+			case "client_auth":
+				args := c.RemainingArgs()
+				if len(args) != 1 {
+					return nil, c.ArgErr()
+				}
+				authType, ok := clientAuthTypes[args[0]]
+				if !ok {
+					return nil, c.Errf("unknown client_auth type: %s", args[0])
+				}
+				clientAuth = authType
+				clientAuthSet = true
+			default:
+				return nil, c.Errf("unknown option: %s", c.Val())
+			}
+		}
+
+		if clientAuthSet {
+			if met.tlsConfig == nil {
+				return nil, c.Err("client_auth requires an inline tls cert and key")
+			}
+			met.tlsConfig.ClientAuth = clientAuth
+			// Reuse the configured CA (if any) to verify client certificates.
+			if met.tlsConfig.RootCAs != nil {
+				met.tlsConfig.ClientCAs = met.tlsConfig.RootCAs
+			}
 		}
 	}
 	return met, nil

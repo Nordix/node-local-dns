@@ -99,16 +99,27 @@ func parseForward(c *caddy.Controller) ([]*Forward, error) {
 
 // Splits the zone, preserving any port that comes after the zone
 func splitZone(host string) (newHost string, zone string) {
+	trans, host, found := strings.Cut(host, "://")
+	if !found {
+		host, trans = trans, ""
+	}
 	newHost = host
 	if strings.Contains(host, "%") {
 		lastPercent := strings.LastIndex(host, "%")
 		newHost = host[:lastPercent]
+		if strings.HasPrefix(newHost, "[") {
+			newHost = newHost + "]"
+		}
 		zone = host[lastPercent+1:]
 		if strings.Contains(zone, ":") {
 			lastColon := strings.LastIndex(zone, ":")
 			newHost += zone[lastColon:]
 			zone = zone[:lastColon]
+			zone = strings.TrimSuffix(zone, "]")
 		}
+	}
+	if trans != "" {
+		newHost = trans + "://" + newHost
 	}
 	return
 }
@@ -144,6 +155,10 @@ func parseStanza(c *caddy.Controller) (*Forward, error) {
 		if err := parseBlock(c, f); err != nil {
 			return f, err
 		}
+	}
+
+	if f.maxAge > 0 && f.maxAge < f.expire {
+		return f, fmt.Errorf("max_age (%s) must not be less than expire (%s)", f.maxAge, f.expire)
 	}
 
 	tlsServerNames := make([]string, len(toHosts))
@@ -196,6 +211,8 @@ func parseStanza(c *caddy.Controller) (*Forward, error) {
 			}
 		}
 		f.proxies[i].SetExpire(f.expire)
+		f.proxies[i].SetMaxAge(f.maxAge)
+		f.proxies[i].SetMaxIdleConns(f.maxIdleConns)
 		f.proxies[i].GetHealthchecker().SetRecursionDesired(f.opts.HCRecursionDesired)
 		// when TLS is used, checks are set to tcp-tls
 		if f.opts.ForceTCP && transports[i] != transport.TLS {
@@ -311,6 +328,30 @@ func parseBlock(c *caddy.Controller, f *Forward) error {
 			return fmt.Errorf("expire can't be negative: %s", dur)
 		}
 		f.expire = dur
+	case "max_age":
+		if !c.NextArg() {
+			return c.ArgErr()
+		}
+		dur, err := time.ParseDuration(c.Val())
+		if err != nil {
+			return err
+		}
+		if dur < 0 {
+			return fmt.Errorf("max_age can't be negative: %s", dur)
+		}
+		f.maxAge = dur
+	case "max_idle_conns":
+		if !c.NextArg() {
+			return c.ArgErr()
+		}
+		n, err := strconv.Atoi(c.Val())
+		if err != nil {
+			return err
+		}
+		if n < 0 {
+			return fmt.Errorf("max_idle_conns can't be negative: %d", n)
+		}
+		f.maxIdleConns = n
 	case "policy":
 		if !c.NextArg() {
 			return c.ArgErr()

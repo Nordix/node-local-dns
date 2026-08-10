@@ -36,7 +36,7 @@ type dio struct {
 	proto              string
 	enc                *encoder
 	queue              chan *tap.Dnstap
-	dropped            uint32
+	dropped            atomic.Uint32
 	quit               chan struct{}
 	flushTimeout       time.Duration
 	tcpTimeout         time.Duration
@@ -70,6 +70,7 @@ func (d *dio) dial() error {
 
 	if d.proto == "tls" {
 		config := &tls.Config{
+			// #nosec G402 -- optional, user-configurable escape hatch for environments that cannot validate certs.
 			InsecureSkipVerify: d.skipVerify,
 		}
 		dialer := &net.Dialer{
@@ -107,7 +108,7 @@ func (d *dio) Dnstap(payload *tap.Dnstap) {
 	select {
 	case d.queue <- payload:
 	default:
-		atomic.AddUint32(&d.dropped, 1)
+		d.dropped.Add(1)
 	}
 }
 
@@ -141,7 +142,7 @@ func (d *dio) serve() {
 			return
 		case payload := <-d.queue:
 			if err := d.write(payload); err != nil {
-				atomic.AddUint32(&d.dropped, 1)
+				d.dropped.Add(1)
 				if !errors.Is(err, errNoOutput) {
 					// Redial immediately if it's not an output connection error
 					d.dial()
@@ -152,7 +153,7 @@ func (d *dio) serve() {
 				d.enc.flush()
 			}
 		case <-errorCheckTicker.C:
-			if dropped := atomic.SwapUint32(&d.dropped, 0); dropped > 0 {
+			if dropped := d.dropped.Swap(0); dropped > 0 {
 				d.logger.Warningf("Dropped dnstap messages: %d\n", dropped)
 			}
 			if d.enc == nil {

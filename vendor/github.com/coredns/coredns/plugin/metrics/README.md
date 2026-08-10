@@ -55,13 +55,35 @@ This plugin can only be used once per Server Block.
 ## Syntax
 
 ~~~
-prometheus [ADDRESS]
+prometheus [ADDRESS] {
+    runtime_metrics
+    tls CERT KEY [CA]
+    client_auth CLIENT_AUTH_TYPE
+}
 ~~~
 
 For each zone that you want to see metrics for.
 
 It optionally takes a bind address to which the metrics are exported; the default
 listens on `localhost:9153`. The metrics path is fixed to `/metrics`.
+
+* `runtime_metrics` exports the full Go [runtime/metrics](https://pkg.go.dev/runtime/metrics)
+  set — notably `go_cpu_classes_*` for CPU attribution (GC mark/assist/pause vs user code)
+  and `go_sched_latencies_seconds` for goroutine scheduling delay. Adds roughly 100 scalars
+  and 8 histograms. This is a process-wide latch: enabling it in any server block enables it
+  for all, and it stays enabled across reloads until restart.
+
+* `tls` enables serving the metrics endpoint over HTTPS. It accepts either:
+  * a single argument — the path to a [prometheus/exporter-toolkit](https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md)
+    web configuration YAML file: `tls CONFIG_FILE`; or,
+  * inline certificate arguments: `tls CERT KEY [CA]`, where `CERT` and `KEY` are the paths to
+    the server certificate and private key, and the optional `CA` is the path to a CA bundle
+    used to verify client certificates.
+
+* `client_auth` sets the client certificate authentication policy when the inline `tls CERT KEY [CA]`
+  form is used. `CLIENT_AUTH_TYPE` is one of `NoClientCert` (default), `RequestClientCert`,
+  `RequireAnyClientCert`, `VerifyClientCertIfGiven`, or `RequireAndVerifyClientCert`. For the
+  verifying policies, provide the `CA` argument to `tls` so client certificates can be validated.
 
 ## Examples
 
@@ -79,6 +101,28 @@ then:
 ~~~ corefile
 . {
     prometheus localhost:{$PORT}
+}
+~~~
+
+Serve the metrics endpoint over HTTPS using inline certificate arguments:
+
+~~~ corefile
+. {
+    prometheus [10.0.1.110]:9253 {
+        tls /certs/tls.crt /certs/tls.key
+        client_auth NoClientCert
+    }
+}
+~~~
+
+Or using a [prometheus/exporter-toolkit](https://github.com/prometheus/exporter-toolkit/blob/master/docs/web-configuration.md)
+web configuration YAML file:
+
+~~~ corefile
+. {
+    prometheus [10.0.1.110]:9253 {
+        tls /etc/tls-web/web-config.yaml
+    }
 }
 ~~~
 

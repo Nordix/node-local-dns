@@ -11,6 +11,7 @@ import (
 
 	"github.com/coredns/coredns/plugin/metrics/vars"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
+	cproxyproto "github.com/coredns/coredns/plugin/pkg/proxyproto"
 	"github.com/coredns/coredns/plugin/pkg/reuseport"
 	"github.com/coredns/coredns/plugin/pkg/transport"
 
@@ -135,6 +136,15 @@ func (s *ServerQUIC) ServeQUIC() error {
 	}
 }
 
+func acquireQUICWorker(ctx context.Context, pool chan struct{}) bool {
+	select {
+	case pool <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // serveQUICConnection handles a new QUIC connection. It waits for new streams
 // and passes them to serveQUICStream.
 func (s *ServerQUIC) serveQUICConnection(conn *quic.Conn) {
@@ -156,10 +166,13 @@ func (s *ServerQUIC) serveQUICConnection(conn *quic.Conn) {
 			return
 		}
 
-		// Use a bounded worker pool
-		s.streamProcessPool <- struct{}{} // Acquire a worker slot, may block
+		if !acquireQUICWorker(conn.Context(), s.streamProcessPool) {
+			_ = stream.Close()
+			return
+		}
+
 		go func(st *quic.Stream, cn *quic.Conn) {
-			defer func() { <-s.streamProcessPool }() // Release worker slot
+			defer func() { <-s.streamProcessPool }()
 			s.serveQUICStream(st, cn)
 		}(stream, conn)
 	}
@@ -211,6 +224,16 @@ func (s *ServerQUIC) serveQUICStream(stream *quic.Stream, conn *quic.Conn) {
 		Msg:        req,
 	}
 
+	if tsig := req.IsTsig(); tsig != nil {
+		if s.tsigSecret == nil {
+			w.tsigStatus = dns.ErrSecret
+		} else if secret, ok := s.tsigSecret[tsig.Hdr.Name]; !ok {
+			w.tsigStatus = dns.ErrSecret
+		} else {
+			w.tsigStatus = dns.TsigVerify(buf, secret, "", false)
+		}
+	}
+
 	dnsCtx := context.WithValue(stream.Context(), Key{}, s.Server)
 	dnsCtx = context.WithValue(dnsCtx, LoopKey{}, 0)
 	s.ServeDNS(dnsCtx, w, req)
@@ -222,6 +245,10 @@ func (s *ServerQUIC) ListenPacket() (net.PacketConn, error) {
 	p, err := reuseport.ListenPacket("udp", s.Addr[len(transport.QUIC+"://"):])
 	if err != nil {
 		return nil, err
+	}
+
+	if s.connPolicy != nil {
+		p = &cproxyproto.PacketConn{PacketConn: p, ConnPolicy: s.connPolicy}
 	}
 
 	s.m.Lock()
@@ -261,7 +288,7 @@ func (s *ServerQUIC) Stop() error {
 }
 
 // Serve implements caddy.TCPServer interface.
-func (s *ServerQUIC) Serve(l net.Listener) error { return nil }
+func (s *ServerQUIC) Serve(_l net.Listener) error { return nil }
 
 // Listen implements caddy.TCPServer interface.
 func (s *ServerQUIC) Listen() (net.Listener, error) { return nil, nil }
@@ -346,7 +373,7 @@ func readDOQMessage(r io.Reader) ([]byte, error) {
 	// A client or server receives a STREAM FIN before receiving all the bytes
 	// for a message indicated in the 2-octet length field.
 	// See https://www.rfc-editor.org/rfc/rfc9250#section-4.3.3-2.2
-	if size != uint16(len(buf)) {
+	if size != uint16(len(buf)) { // #nosec G115 -- buf length fits in uint16
 		return nil, fmt.Errorf("message size does not match 2-byte prefix")
 	}
 
